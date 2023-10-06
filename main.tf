@@ -1,5 +1,25 @@
 provider "aws" {
-  region = "us-east-1"  # Change to your desired AWS region
+  region = var.region
+}
+
+variable "region" {
+  description = "AWS region"
+  default     = "us-east-1"
+}
+
+variable "lambda_function_name" {
+  description = "Name of the Lambda function"
+  default     = "ASG_Scaller"
+}
+
+variable "dynamodb_table_name" {
+  description = "Name of the DynamoDB table"
+  default     = "ASG_Scaller_Storage"
+}
+
+variable "cloudwatch_event_rule_name" {
+  description = "Name of the CloudWatch Events rule"
+  default     = "ASG_Scaller_Schedule"
 }
 
 resource "aws_iam_role" "lambda_role" {
@@ -60,7 +80,7 @@ resource "aws_iam_role_policy_attachment" "lambda_policy_attachment" {
 }
 
 resource "aws_dynamodb_table" "dynamodb_table" {
-  name         = "ASG_Scaller_Storage"
+  name         = var.dynamodb_table_name
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "ASGName"
 
@@ -77,15 +97,31 @@ data "archive_file" "lambda_function_zip" {
 }
 
 resource "aws_lambda_function" "lambda_function" {
-  function_name    = "ASG_Scaller"
+  function_name    = var.lambda_function_name
   role             = aws_iam_role.lambda_role.arn
   handler          = "asg_scaller.lambda_handler"
   runtime          = "python3.11"
   filename         = data.archive_file.lambda_function_zip.output_path
   source_code_hash = data.archive_file.lambda_function_zip.output_base64sha256
+}
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_policy_attachment,
-    aws_dynamodb_table.dynamodb_table,
-  ]
+ 
+resource "aws_cloudwatch_event_rule" "lambda_schedule" {
+  name        = var.cloudwatch_event_rule_name
+  description = "Schedule rule for ASG Scaller Lambda"
+  schedule_expression = "rate(1 minute)"
+}
+
+resource "aws_cloudwatch_event_target" "lambda_target" {
+  rule = aws_cloudwatch_event_rule.lambda_schedule.name
+  arn  = aws_lambda_function.lambda_function.arn
+}
+
+
+resource "aws_lambda_permission" "allow_cloudwatch_to_call_rw_fallout_retry_step_deletion_lambda" {
+  statement_id = "AllowExecutionFromCloudWatch"
+  action = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda_function.function_name
+  principal = "events.amazonaws.com"
+  source_arn = aws_cloudwatch_event_rule.lambda_schedule.arn
 }
