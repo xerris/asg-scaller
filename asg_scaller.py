@@ -1,7 +1,7 @@
 import boto3
 import datetime
 
-DYNAMODB_TABLE_NAME = 'AndriiBtDemoStorage'
+DYNAMODB_TABLE_NAME = 'ASG_Scaller_Storage'
 region = 'us-east-1'
 
 def get_autoscaling_groups(region):
@@ -16,8 +16,12 @@ def parse_time_ranges(time_ranges):
 
 def is_current_time_in_ranges(current_time, time_ranges):
     for start_time, end_time in time_ranges:
-        if start_time <= current_time <= end_time:
-            return f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
+        if start_time <= end_time:
+            if start_time <= current_time <= end_time:
+                return f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
+        else:  # Case where the time range spans across two days
+            if current_time >= start_time or current_time <= end_time:
+                return f"{start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}"
     return None
 
 def update_autoscaling_group(asg_name, min_capacity, desired_capacity, region):
@@ -53,20 +57,25 @@ def lambda_handler(event, context):
 
     autoscaling_groups = get_autoscaling_groups(region)
     current_time = get_current_time()
+    print(f"current_time {current_time}")
 
     for asg in autoscaling_groups:
         asg_name = asg['AutoScalingGroupName']
+        print(f"Check {asg_name}")
+
         non_working_hours_tag = next((tag for tag in asg.get('Tags', []) if tag['Key'] == 'non_working_hours'), None)
-        print(f"Checking {asg_name}")
 
         if non_working_hours_tag is None:
-            print(f"Skip {asg_name}")
+            print(f"Skip {asg_name} as a non marked")
             continue
 
         if non_working_hours_tag:
+            print(f"non_working_hours_tag {asg_name} = {non_working_hours_tag}")
             time_ranges = parse_time_ranges(non_working_hours_tag['Value'].split(','))
             current_time_slot = is_current_time_in_ranges(current_time.time(), time_ranges)
             dynamodb_values = get_from_dynamodb(dynamodb_table, asg_name)
+            
+            print(f"{asg_name} = current_time_slot={current_time_slot}. dynamodb_values={dynamodb_values}. time_ranges={time_ranges}")
 
             if current_time_slot:
                 # Check if the ASG has already been scaled down during this time slot
@@ -77,11 +86,12 @@ def lambda_handler(event, context):
                 save_to_dynamodb(dynamodb_table, asg_name, asg['MinSize'], asg['DesiredCapacity'], str(current_time), current_time_slot)
                 update_autoscaling_group(asg_name, 0, 0, region)
                 print(f"Operation: Set min and desired capacity to 0 for ASG {asg_name} {current_time_slot}. Save MinSize={asg['MinSize']} DesiredCapacity={asg['DesiredCapacity']}")
+                continue
             else:
                 if dynamodb_values and 'DesiredCapacity' in dynamodb_values and dynamodb_values['DesiredCapacity'] > 0:
                     update_autoscaling_group(asg_name, dynamodb_values['MinCapacity'], dynamodb_values['DesiredCapacity'], region)
                     print(f"Operation: Restored min and desired capacity from DynamoDB for ASG {asg_name} MinCapacity={dynamodb_values['MinCapacity']} DesiredCapacity={dynamodb_values['DesiredCapacity']}.")
-                else:
-                    print(f"Skip any action for ASG {asg_name}.")
+                    continue
+        print(f"Ignore {asg_name}")
 
     print("Lambda execution completed.")
